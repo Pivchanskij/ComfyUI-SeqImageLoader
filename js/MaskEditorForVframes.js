@@ -66,7 +66,8 @@ class MaskEditorDialog extends ComfyDialog {
 
 	constructor() {
 		super();
-		this.element = $el("div", { parent: document.body }, 
+		this.autoReusePrev = false;
+        this.element = $el("div", { parent: document.body }, 
 			[ $el("div.comfy-modal-content", 
 				[...this.createButtons()]),
 			]);
@@ -336,7 +337,26 @@ class MaskEditorDialog extends ComfyDialog {
 		top_right_sub_panel.appendChild(prevButton);
 		top_right_sub_panel.appendChild(nextButton);
 		bottom_panel.appendChild(clearButton);
-		bottom_panel.appendChild(ReuseButton);
+		
+        var autoReuseCheckbox = document.createElement("input");
+        autoReuseCheckbox.type = "checkbox";
+        autoReuseCheckbox.id = "autoReuseCheckbox";
+        autoReuseCheckbox.title = "Auto-copy previous mask on frame change";
+        autoReuseCheckbox.style.marginLeft = "10px";
+        autoReuseCheckbox.addEventListener("change", (e) => {
+            this.autoReusePrev = e.target.checked;
+        });
+
+        var autoReuseLabel = document.createElement("label");
+        autoReuseLabel.htmlFor = "autoReuseCheckbox";
+        autoReuseLabel.innerText = "Auto Reuse Prev";
+        autoReuseLabel.style.color = "white";
+        autoReuseLabel.style.marginLeft = "4px";
+
+        bottom_panel.appendChild(autoReuseCheckbox);
+        bottom_panel.appendChild(autoReuseLabel);
+
+        bottom_panel.appendChild(ReuseButton);
 		bottom_panel.appendChild(this.saveButton);
 		bottom_panel.appendChild(cancelButton);
 		bottom_panel.appendChild(brush_size_slider);
@@ -541,8 +561,14 @@ class MaskEditorDialog extends ComfyDialog {
 		touched_image.src = alpha_url;
 
 		// original image load
-		orig_image.onload = function() {
+		orig_image.onload = () => {
 			window.dispatchEvent(new Event('resize'));
+			// === Auto reuse previous mask after image is loaded ===
+			if (this.autoReusePrev && this.#selectedIndex > 0) {
+				const prevBack = this.getBackCanvasForCurrentMode(this.#selectedIndex - 1);
+				this.maskCtx.clearRect(0, 0, this.maskCanvas.width, this.maskCanvas.height);
+				this.maskCtx.drawImage(prevBack, 0, 0, prevBack.width, prevBack.height);
+			}
 		};
 
 		const rgb_url = new URL(api.apiURL("/view?" + new URLSearchParams(this.#paths[this.#selectedIndex]).toString()), window.location.href);
@@ -882,7 +908,7 @@ class MaskEditorDialog extends ComfyDialog {
 	getActiveBrushColor() {
 		return this.is_sketch
 			? this.colorPicker.value
-			: "#ffffff";
+			: "#ff0000";
 	}
 
 	prepareSketchLayer() {
@@ -927,6 +953,7 @@ class MaskEditorDialog extends ComfyDialog {
 			&& newIndex >= 0 
 			&& newIndex < this.#paths.length) {
 			this.storeActiveToBack();
+        // Auto Reuse moved to onload handler
 			this.#selectedIndex = newIndex;
 			const params = new URLSearchParams(this.#paths[this.#selectedIndex]);
 			this.image.src = new URL(api.apiURL("/view?" + params.toString()), window.location.href);
@@ -938,19 +965,31 @@ class MaskEditorDialog extends ComfyDialog {
 		this.storeActiveToBack();
 
 		const uploadImages = async (maskCanvas, i, idSitr) => {
-			const body = new FormData();
-			const dataURL = maskCanvas.toDataURL();
-			const blob = dataURLToBlob(dataURL);
-			const extPos = this.#paths[i].filename.lastIndexOf(".");
-			const filename = this.#paths[i].filename.substr(0, extPos) + ".png";
+    const ctx = maskCanvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, maskCanvas.width, maskCanvas.height);
+    for (let i = 0; i < imageData.data.length; i += 4) {
+        if (imageData.data[i + 3] !== 0) {
+            imageData.data[i + 0] = 255; // R
+            imageData.data[i + 1] = 255; // G
+            imageData.data[i + 2] = 255; // B
+            imageData.data[i + 3] = 255; // A
+        }
+    }
+    ctx.putImageData(imageData, 0, 0);
 
-			body.append("image", blob, filename);
-			body.append("subfolder", "extVideoFrame" + idSitr);
-			const resp = await api.fetchApi("/upload/image", {
-				method: "POST",
-				body,
-			});
-		};
+    const body = new FormData();
+    const dataURL = maskCanvas.toDataURL();
+    const blob = dataURLToBlob(dataURL);
+    const extPos = this.#paths[i].filename.lastIndexOf(".");
+    const filename = this.#paths[i].filename.substr(0, extPos) + ".png";
+
+    body.append("image", blob, filename);
+    body.append("subfolder", "extVideoFrame" + idSitr);
+    const resp = await api.fetchApi("/upload/image", {
+        method: "POST",
+        body,
+    });
+};
 
 		this.saveButton.innerText = "Saving...";
 		this.saveButton.disabled = true;
